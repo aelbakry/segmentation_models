@@ -315,8 +315,6 @@ class EncoderDecoder(AbstractModel):
 
         self.decoder_stages = nn.ModuleList([self.get_decoder(idx) for idx in range(0, len(self.decoder_filters))])
 
-        if self.attention:
-            self.attention_blocks = nn.ModuleList([CBAM(i) for i in self.decoder_filters])
 
         if self.first_layer_stride_two:
             # self.last_upsample = self.decoder_block(self.decoder_filters[0], self.last_upsample_filters,
@@ -347,12 +345,12 @@ class EncoderDecoder(AbstractModel):
         bottlenecks = self.bottlenecks
         if self.use_bilinear_4x:
             bottlenecks = bottlenecks[:-1]
+
         for idx, bottleneck in enumerate(bottlenecks):
             rev_idx = - (idx + 1)
             x = self.decoder_stages[rev_idx](x)
             x = bottleneck(x, enc_results[rev_idx - 1])
-            if attention:
-                x = self.attention_blocks[rev_idx-1](x)
+
         #if self.use_bilinear_4x:
         #x = self.dropout(x)
 
@@ -437,7 +435,7 @@ class SCSeResnetD(EncoderDecoder):
 
     def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False):
         if not hasattr(self, 'bottleneck_type'):
-            self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode)
+            self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode, attention=attention)
         self.first_layer_stride_two = True
         self.concat_scse = mode == 'concat'
         self.pretrained = pretrained
@@ -504,7 +502,7 @@ class SCSeResneXt(EncoderDecoder):
 
     def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False):
         if not hasattr(self, 'bottleneck_type'):
-            self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode)
+            self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode, attention=attention)
         self.first_layer_stride_two = True
         self.concat_scse = mode == 'concat'
         self.pretrained = pretraineds
@@ -565,14 +563,22 @@ class SCSeResneXt(EncoderDecoder):
         return ['layer0.conv1']
 
 class ConvSCSEBottleneckNoBn(nn.Module):
-    def __init__(self, in_channels, out_channels, reduction=2, mode='concat'):
+    def __init__(self, in_channels, out_channels, reduction=2, mode='concat', attention=False):
         print("bottleneck ", in_channels, out_channels)
         super().__init__()
-        self.seq = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=1),
-            nn.ReLU(inplace=True),
-            SCSEModule(out_channels, reduction=reduction, mode=mode)
-        )
+        if attention:
+            self.seq = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 3, padding=1),
+                nn.ReLU(inplace=True),
+                SCSEModule(out_channels, reduction=reduction, mode=mode),
+                CBAM(out_channels*2)
+            )
+        else:
+            self.seq = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 3, padding=1),
+                nn.ReLU(inplace=True),
+                SCSEModule(out_channels, reduction=reduction, mode=mode)
+            )
 
     def forward(self, dec, enc):
 
@@ -740,7 +746,7 @@ class SCSeNfNet(EncoderDecoder):
 
     def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False):
         if not hasattr(self, 'bottleneck_type'):
-            self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode)
+            self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode, attention=attention)
         self.first_layer_stride_two = True
         self.concat_scse = mode == 'concat'
         self.pretrained = pretrained

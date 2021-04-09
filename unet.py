@@ -293,11 +293,13 @@ class AbstractModel(nn.Module):
 
 
 class EncoderDecoder(AbstractModel):
-    def __init__(self, num_classes, num_channels=3, encoder_name='resnet34'):
+    def __init__(self, num_classes, num_channels=3, encoder_name='resnet34', scaled=False):
         if not hasattr(self, 'first_layer_stride_two'):
             self.first_layer_stride_two = False
-        if not hasattr(self, 'decoder_block'):
+        if not hasattr(self, 'decoder_block') and scaled:
             self.decoder_block = UnetDecoderScaledBlock
+        else:
+            self.decoder_block = UnetDecoderBlock
         if not hasattr(self, 'bottleneck_type'):
             self.bottleneck_type = ConvBottleneck
         if not hasattr(self, 'use_bilinear_4x'):
@@ -423,21 +425,12 @@ class ConvSCSEBottleneckScaled(nn.Module):
     def __init__(self, in_channels, out_channels, reduction=2, mode='concat', attention=False):
         print("bottleneck ", in_channels, out_channels)
         super().__init__()
-        if attention:
-            self.act = GammaAct()
-            self.seq = nn.Sequential(
-                ScaledStdConv2dSame(in_channels, out_channels, kernel_size=3),
-                self.act,
-                SCSEModule(out_channels, reduction=reduction, mode=mode),
-                CBAM(out_channels*2)
-            )
-        else:
-            self.act = GammaAct()
-            self.seq = nn.Sequential(
-                ScaledStdConv2dSame(in_channels, out_channels, kernel_size=3),
-                self.act,
-                SCSEModule(out_channels, reduction=reduction, mode=mode)
-            )
+
+        self.seq = nn.Sequential(
+            ScaledStdConv2dSame(in_channels, out_channels, kernel_size=3),
+            GammaAct(),
+            SCSEModule(out_channels, reduction=reduction, mode=mode)
+        )
 
     def forward(self, dec, enc):
 
@@ -450,11 +443,10 @@ class ConvSCSEBottleneckScaled(nn.Module):
 class UnetDecoderScaledBlock(nn.Module):
     def __init__(self, in_channels, middle_channels, out_channels):
         super().__init__()
-        self.act = GammaAct()
         self.layer = nn.Sequential(
             nn.Upsample(scale_factor=2),
             ScaledStdConv2dSame(in_channels, out_channels, kernel_size=3),
-            self.act
+            GammaAct()
         )
 
     def forward(self, x):
@@ -474,8 +466,10 @@ class UnetDecoderBlock(nn.Module):
 
 class SCSeResnetD(EncoderDecoder):
 
-    def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False):
-        if not hasattr(self, 'bottleneck_type'):
+    def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False, scaled=False):
+        if not hasattr(self, 'bottleneck_type') and scaled:
+            self.bottleneck_type = partial(ConvSCSEBottleneckScaled, reduction=reduction, mode=mode, attention=attention)
+        else:
             self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode, attention=attention)
         self.first_layer_stride_two = True
         self.concat_scse = mode == 'concat'
@@ -785,15 +779,18 @@ class SEUnet(EncoderDecoder):
 
 class SCSeNfNet(EncoderDecoder):
 
-    def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False):
-        if not hasattr(self, 'bottleneck_type'):
+    def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False, scaled=False):
+        if not hasattr(self, 'bottleneck_type') and scaled:
             self.bottleneck_type = partial(ConvSCSEBottleneckScaled, reduction=reduction, mode=mode, attention=attention)
+        else:
+            self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode, attention=attention)
+
         self.first_layer_stride_two = True
         self.concat_scse = mode == 'concat'
         self.pretrained = pretrained
         self.attention = attention
 
-        super().__init__(seg_classes,num_channels , backbone_arch)
+        super().__init__(seg_classes,num_channels , backbone_arch, scaled)
         self.last_upsample = self.decoder_block(
             self.decoder_filters[0] * 2 if self.concat_scse else self.decoder_filters[0],
             self.last_upsample_filters,
@@ -846,12 +843,12 @@ class SCSeNfNet(EncoderDecoder):
         return ['stem.conv1']
 
 class NfNet(EncoderDecoder):
-    def __init__(self, seg_classes, backbone_arch='senet154', pretrained=True, attention=False):
+    def __init__(self, seg_classes, backbone_arch='senet154', pretrained=True, attention=False, scaled=False):
         self.first_layer_stride_two = True
         self.pretrained = pretrained
         self.attention = attention
 
-        super().__init__(seg_classes, 3, backbone_arch)
+        super().__init__(seg_classes, 3, backbone_arch, scaled)
 
     def get_encoder(self, encoder, layer):
         if layer == 0:
@@ -940,7 +937,7 @@ __all__ = ['scse_unet',
 if __name__ == '__main__':
     import numpy as np
 
-    d = SCSeNfNet(1, backbone_arch="dm_nfnet_f0", pretrained=False, attention=False)
+    d = SCSeNfNet(1, backbone_arch="dm_nfnet_f0", pretrained=False, attention=False, scaled=True)
     d.eval()
     with torch.no_grad():
         images = torch.from_numpy(np.zeros((1, 3, 256, 256), dtype="float32"))

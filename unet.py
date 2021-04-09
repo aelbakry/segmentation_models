@@ -13,9 +13,10 @@ from densenet import densenet121, densenet169, densenet161
 from dpn import dpn92, dpn131, dpn107, dpn92_mc
 from irv import InceptionResNetV2
 from resnet import resnext50_32x4d, resnext101_32x8d
-from senet import se_resnext50_32x4d, se_resnext101_32x4d, senet154, SCSEModule
+from senet import se_resnext50_32x4d, se_resnext101_32x4d, senet154, SCSEModule, SCSEScaledModule
 from nfnet import dm_nfnet_f0, dm_nfnet_f1, dm_nfnet_f2, dm_nfnet_f3, dm_nfnet_f4, dm_nfnet_f5, dm_nfnet_f6
 from cbam import CBAM
+from layers import ScaledStdConv2dSame, GammaAct
 
 from timm import create_model
 
@@ -296,7 +297,7 @@ class EncoderDecoder(AbstractModel):
         if not hasattr(self, 'first_layer_stride_two'):
             self.first_layer_stride_two = False
         if not hasattr(self, 'decoder_block'):
-            self.decoder_block = UnetDecoderBlock
+            self.decoder_block = UnetDecoderScaledBlock
         if not hasattr(self, 'bottleneck_type'):
             self.bottleneck_type = ConvBottleneck
         if not hasattr(self, 'use_bilinear_4x'):
@@ -418,6 +419,46 @@ class ConvBottleneck(nn.Module):
         x = torch.cat([dec, enc], dim=1)
         return self.seq(x)
 
+class ConvSCSEBottleneckScaled(nn.Module):
+    def __init__(self, in_channels, out_channels, reduction=2, mode='concat', attention=False):
+        print("bottleneck ", in_channels, out_channels)
+        super().__init__()
+        if attention:
+            self.act = GammaAct()
+            self.seq = nn.Sequential(
+                ScaledStdConv2dSame(in_channels, out_channels, kernel_size=3),
+                self.act,
+                SCSEModule(out_channels, reduction=reduction, mode=mode),
+                CBAM(out_channels*2)
+            )
+        else:
+            self.act = GammaAct()
+            self.seq = nn.Sequential(
+                ScaledStdConv2dSame(in_channels, out_channels, kernel_size=3),
+                self.act,
+                SCSEModule(out_channels, reduction=reduction, mode=mode)
+            )
+
+    def forward(self, dec, enc):
+
+        if dec.shape[-1] != enc.shape[-1]:
+            enc = F.interpolate(enc, scale_factor=2, mode='bilinear')
+
+        x = torch.cat([dec, enc], dim=1)
+        return self.seq(x)
+
+class UnetDecoderScaledBlock(nn.Module):
+    def __init__(self, in_channels, middle_channels, out_channels):
+        super().__init__()
+        self.act = GammaAct()
+        self.layer = nn.Sequential(
+            nn.Upsample(scale_factor=2),
+            ScaledStdConv2dSame(in_channels, out_channels, kernel_size=3),
+            self.act
+        )
+
+    def forward(self, x):
+        return self.layer(x)
 
 class UnetDecoderBlock(nn.Module):
     def __init__(self, in_channels, middle_channels, out_channels):
@@ -746,7 +787,7 @@ class SCSeNfNet(EncoderDecoder):
 
     def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False):
         if not hasattr(self, 'bottleneck_type'):
-            self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode, attention=attention)
+            self.bottleneck_type = partial(ConvSCSEBottleneckScaled, reduction=reduction, mode=mode, attention=attention)
         self.first_layer_stride_two = True
         self.concat_scse = mode == 'concat'
         self.pretrained = pretrained
@@ -899,10 +940,10 @@ __all__ = ['scse_unet',
 if __name__ == '__main__':
     import numpy as np
 
-    d = SCSeResnetD(1, backbone_arch="resnet152d", pretrained=False, attention=True)
+    d = SCSeNfNet(1, backbone_arch="dm_nfnet_f0", pretrained=False, attention=False)
     d.eval()
     with torch.no_grad():
         images = torch.from_numpy(np.zeros((1, 3, 256, 256), dtype="float32"))
         i = d(images)
-    # print(d)
+    print(d)
     print(i.size())

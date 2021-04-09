@@ -12,6 +12,8 @@ from torch.utils import model_zoo
 
 #from sync_batchnorm import SynchronizedBatchNorm2d as BatchNorm2d
 from torch.nn import BatchNorm2d
+from layers import ScaledStdConv2dSame, GammaAct
+
 
 __all__ = ['SENet', 'senet154', 'se_resnet50', 'se_resnet101', 'se_resnet152',
            'se_resnext50_32x4d', 'se_resnext101_32x4d']
@@ -106,6 +108,39 @@ class SEModule(nn.Module):
         x = self.fc2(x)
         x = self.sigmoid(x)
         return module_input * x
+
+class SCSEScaledModule(nn.Module):
+    # according to https://arxiv.org/pdf/1808.08127.pdf concat is better
+    def __init__(self, channels, reduction=16, mode='concat'):
+        super(SCSEScaledModule, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc1 = ScaledStdConv2dSame(channels, channels // reduction, kernel_size=1)
+        self.gelu = GammaAct()
+        self.fc2 = ScaledStdConv2dSame(channels // reduction, channels, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+
+        self.spatial_se = nn.Sequential(ScaledStdConv2dSame(channels, 1, kernel_size=1, bias=False),
+                                        nn.Sigmoid())
+        self.mode = mode
+
+    def forward(self, x):
+        module_input = x
+
+        x = self.avg_pool(x)
+        x = self.fc1(x)
+        x = self.gelu(x)
+        x = self.fc2(x)
+        chn_se = self.sigmoid(x)
+        chn_se = chn_se * module_input
+
+        spa_se = self.spatial_se(module_input)
+        spa_se = module_input * spa_se
+        if self.mode == 'concat':
+            return torch.cat([chn_se, spa_se], dim=1)
+        elif self.mode == 'maxout':
+            return torch.max(chn_se, spa_se)
+        else:
+            return chn_se + spa_se
 
 class SCSEModule(nn.Module):
     # according to https://arxiv.org/pdf/1808.08127.pdf concat is better
@@ -563,4 +598,3 @@ if __name__ == '__main__':
 
 
     print(se_resnext50_32x4d())
-

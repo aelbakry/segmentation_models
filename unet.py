@@ -3,7 +3,6 @@ import sys
 from functools import partial
 
 import torch.hub
-from pretrainedmodels import inceptionresnetv2
 from torch.nn import Dropout2d, UpsamplingBilinear2d, Sequential
 from torch.nn.functional import upsample_bilinear
 from torch.utils import model_zoo
@@ -11,7 +10,6 @@ from torch.utils import model_zoo
 import resnet
 from densenet import densenet121, densenet169, densenet161
 from dpn import dpn92, dpn131, dpn107, dpn92_mc
-from irv import InceptionResNetV2
 from resnet import resnext50_32x4d, resnext101_32x8d
 from senet import se_resnext50_32x4d, se_resnext101_32x4d, senet154, SCSEModule, SCSEScaledModule
 from nfnet import dm_nfnet_f0, dm_nfnet_f1, dm_nfnet_f2, dm_nfnet_f3, dm_nfnet_f4, dm_nfnet_f5, dm_nfnet_f6
@@ -170,18 +168,6 @@ encoder_params = {
          'last_upsample': 64,
          'url': None,
          'init_op': partial(densenet161, in_channels=3)},
-    'inceptionresnetv2':
-        {'filters': [64, 192, 320, 1088, 1536],
-         'decoder_filters': [64, 128, 256, 256],
-         'last_upsample': 64,
-         'url': None,
-         'init_op': inceptionresnetv2},
-    'inceptionresnetv2mc':
-        {'filters': [64, 192, 320, 1088, 1536],
-         'decoder_filters': [64, 128, 256, 256],
-         'last_upsample': 64,
-         'url': 'http://data.lip6.fr/cadene/pretrainedmodels/inceptionresnetv2-520b38e4.pth',
-         'init_op': partial(InceptionResNetV2, num_channels=8)},
     'resnet152d':
          {'filters': [64, 256, 512, 1024, 2048],
           'decoder_filters': [64, 128, 256, 384],
@@ -862,54 +848,7 @@ class NfNet(EncoderDecoder):
         elif layer == 4:
             return encoder.stages[3]
 
-class IRV2Unet(EncoderDecoder):
-    def __init__(self, seg_classes, backbone_arch='inceptionresnetv2',  num_channels=3, pretrained=True, attention=False):
-        self.first_layer_stride_two = True
-        self.pretrained = pretrained
-        self.attention = attention
-        super().__init__(seg_classes, num_channels, backbone_arch)
 
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                if m.kernel_size == (3, 3):
-                    m.padding = (1, 1)
-            if isinstance(m, nn.MaxPool2d):
-                m.padding = (1, 1)
-
-    def get_encoder(self, encoder, layer):
-        if layer == 0:
-            return Sequential(encoder.conv2d_1a, encoder.conv2d_2a, encoder.conv2d_2b)
-        elif layer == 1:
-            return nn.Sequential(
-                encoder.maxpool_3a,
-                encoder.conv2d_3b,
-                encoder.conv2d_4a
-            )
-        elif layer == 2:
-            return nn.Sequential(
-                encoder.maxpool_5a,
-                encoder.mixed_5b,
-                encoder.repeat
-            )
-        elif layer == 3:
-            return nn.Sequential(
-                encoder.mixed_6a,
-                encoder.repeat_1,
-            )
-        elif layer == 4:
-            return nn.Sequential(
-                encoder.mixed_7a,
-                encoder.repeat_2,
-                encoder.block8,
-                encoder.conv2d_7b,
-            )
-    @property
-    def first_layer_params_names(self):
-        return ['conv2d_1a.conv']
-
-    def initialize_encoder(self, model, model_url, num_channels_changed=False):
-        del model.last_linear
-        super().initialize_encoder(model, model_url, num_channels_changed)
 
 
 setattr(sys.modules[__name__], 'scse_unet', partial(SCSeResneXt))
@@ -920,7 +859,6 @@ setattr(sys.modules[__name__], 'resnext_unet', partial(ResneXt))
 setattr(sys.modules[__name__], 'resnext_unet_3', partial(ResneXt, num_channels=3))
 setattr(sys.modules[__name__], 'dpn_unet', partial(DPNUnet))
 setattr(sys.modules[__name__], 'densenet_unet', partial(DensenetUnet))
-setattr(sys.modules[__name__], 'irv_unet', partial(IRV2Unet))
 
 __all__ = ['scse_unet',
            'scse_unet_addition',

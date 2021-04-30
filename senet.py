@@ -9,6 +9,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from functools import partial
 
 from torch.utils import model_zoo
 
@@ -87,6 +88,17 @@ pretrained_settings = {
             'num_classes': 1000
         }
     },
+    'se_resnext101_32x16d': {
+        'imagenet': {
+            'url': 'https://download.pytorch.org/models/ig_resnext101_32x16-c6f796b0.pth',
+            'input_space': 'RGB',
+            'input_size': [3, 224, 224],
+            'input_range': [0, 1],
+            'mean': [0.485, 0.456, 0.406],
+            'std': [0.229, 0.224, 0.225],
+            'num_classes': 1000
+        }
+    },
 }
 
 class ArcFaceLoss(nn.modules.Module):
@@ -101,7 +113,7 @@ class ArcFaceLoss(nn.modules.Module):
         self.mm = math.sin(math.pi - m) * m
 
     def forward(self, logits, labels, epoch=0):
-        cosine = logits
+        cosine = logits.float()
         sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
         phi = cosine * self.cos_m - sine * self.sin_m
         if self.easy_margin:
@@ -673,13 +685,13 @@ class SENetArcFace(nn.Module):
         self._initialize_weights()
 
         self.EX = 4
-
-        self.bn1 = nn.BatchNorm1d(1024 * self.EX)
-        self.fc1 = nn.Linear(1024 * self.EX, 512 * self.EX)
-        self.bn2 = nn.BatchNorm1d(512 * self.EX)
+        
+        self.bn11 = nn.BatchNorm1d(1024 * self.EX)
+        self.fc11 = nn.Linear(1024 * self.EX, 512 * self.EX)
+        self.bn22 = nn.BatchNorm1d(512 * self.EX)
         self.relu = nn.ReLU(inplace=True)
-        self.fc2 = nn.Linear(512 * self.EX, 512)
-        self.bn3 = nn.BatchNorm1d(512)
+        self.fc22 = nn.Linear(512 * self.EX, 512)
+        self.bn33 = nn.BatchNorm1d(512)
 
         self.arc_margin_product=ArcMarginProduct(512, 2)
 
@@ -726,23 +738,23 @@ class SENetArcFace(nn.Module):
         x = torch.cat((nn.AdaptiveAvgPool2d(1)(input), nn.AdaptiveMaxPool2d(1)(input)), dim=1)
         x = x.view(x.size(0), -1)
 
-        x = self.bn1(x)
+        x = self.bn11(x)
         x = F.dropout(x, p=0.25)
-        x = self.fc1(x)
+        x = self.fc11(x)
         x = self.relu(x)
-        x = self.bn2(x)
+        x = self.bn22(x)
         x = F.dropout(x, p=0.5)
 
         x = x.view(x.size(0), -1)
 
-        x = self.fc2(x)
-        x = self.bn3(x)
+        x = self.fc22(x)
+        x = self.bn33(x)
+        x = self.arc_margin_product(x)
         return x
 
     def forward(self, x):
         x = self.features(x)
         x = self.logits(x)
-        x = self.arc_margin_product(x)
         return x
 
 def initialize_pretrained_model(model, num_classes, settings):
@@ -849,6 +861,27 @@ def se_resnext101_32x4d(num_classes=1000, pretrained='imagenet'):
         settings = pretrained_settings['se_resnext101_32x4d'][pretrained]
         initialize_pretrained_model(model, num_classes, settings)
     return model
+
+def se_resnext101_32x4d_arcface(num_classes=1000, pretrained=None):
+    model = SENetArcFace(SEResNeXtBottleneck, [3, 4, 23, 3], groups=32, reduction=16,
+                  dropout_p=None, inplanes=64, input_3x3=False,
+                  downsample_kernel_size=1, downsample_padding=0,
+                  num_classes=num_classes)
+    if pretrained is not None:
+        settings = pretrained_settings['se_resnext101_32x4d'][pretrained]
+        initialize_pretrained_model(model, num_classes, settings)
+    return model
+
+def se_resnext101_32x16d_arcface(num_classes=1000, pretrained=None):
+    model = SENetArcFace(SEResNeXtBottleneck, [3, 4, 23, 3], groups=32, reduction=16,
+                  dropout_p=None, inplanes=64, input_3x3=False,
+                  downsample_kernel_size=1, downsample_padding=0,
+                  num_classes=num_classes)
+    if pretrained is not None:
+        settings = pretrained_settings['se_resnext101_32x16d'][pretrained]
+        initialize_pretrained_model(model, num_classes, settings)
+    return model
+
 if __name__ == '__main__':
 
 

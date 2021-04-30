@@ -11,7 +11,7 @@ import resnet
 from densenet import densenet121, densenet169, densenet161
 from dpn import dpn92, dpn131, dpn107, dpn92_mc
 from resnet import resnext50_32x4d, resnext101_32x8d
-from senet import se_resnext50_32x4d, se_resnext101_32x4d, senet154, SCSEModule, SCSEScaledModule
+from senet import se_resnext50_32x4d, se_resnext101_32x4d, senet154, SCSEModule, SCSEScaledModule,se_resnext50_32x4d_arcface, se_resnext101_32x4d_arcface, se_resnext101_32x16d_arcface
 from nfnet import dm_nfnet_f0, dm_nfnet_f1, dm_nfnet_f2, dm_nfnet_f3, dm_nfnet_f4, dm_nfnet_f5, dm_nfnet_f6
 from cbam import CBAM
 from layers import ScaledStdConv2dSame, GammaAct
@@ -71,12 +71,21 @@ encoder_params = {
          'decoder_filters': [64, 128, 256, 256],
          'init_op': senet154,
          'url': 'http://data.lip6.fr/cadene/pretrainedmodels/senet154-c7b49a05.pth'},
-    'seresnext50_fat':
+    'seresnext50_arcface':
         {'filters': [64, 256, 512, 1024, 2048],
-         'decoder_filters': [96, 192, 256, 512],
-         'last_upsample': 64,
-         'init_op': se_resnext50_32x4d,
+         'decoder_filters': [64, 128, 256, 384],
+         'init_op': se_resnext50_32x4d_arcface,
          'url': 'http://data.lip6.fr/cadene/pretrainedmodels/se_resnext50_32x4d-a260b3a4.pth'},
+    'seresnext101_arcface':
+        {'filters': [64, 256, 512, 1024, 2048],
+         'decoder_filters': [128, 256, 348, 512],
+         'init_op': se_resnext101_32x4d_arcface,
+         'url': 'http://data.lip6.fr/cadene/pretrainedmodels/se_resnext101_32x4d-3b2fe3d8.pth'},
+    'seresnext101_16_arcface':
+        {'filters': [64, 256, 512, 1024, 2048],
+         'decoder_filters': [128, 256, 348, 512],
+         'init_op': se_resnext101_32x16d_arcface,
+         'url': 'https://download.pytorch.org/models/ig_resnext101_32x16-c6f796b0.pth'},
     'seresnext101':
         {'filters': [64, 256, 512, 1024, 2048],
          'decoder_filters': [64, 128, 256, 256],
@@ -279,7 +288,7 @@ class AbstractModel(nn.Module):
 
 
 class EncoderDecoder(AbstractModel):
-    def __init__(self, num_classes, num_channels=3, encoder_name='resnet34', scaled=False):
+    def __init__(self, num_classes, num_channels=3, encoder_name='resnet34', scaled=False, arcface=False):
         if not hasattr(self, 'first_layer_stride_two'):
             self.first_layer_stride_two = False
         if not hasattr(self, 'decoder_block') and scaled:
@@ -290,7 +299,10 @@ class EncoderDecoder(AbstractModel):
             self.bottleneck_type = ConvBottleneck
         if not hasattr(self, 'use_bilinear_4x'):
             self.use_bilinear_4x = False
-
+            
+        if not hasattr(self, 'arcface'):
+            self.arcface = arcface
+            
         self.filters = encoder_params[encoder_name]['filters']
         self.decoder_filters = encoder_params[encoder_name].get('decoder_filters', self.filters[:-1])
         self.last_upsample_filters = encoder_params[encoder_name].get('last_upsample', self.decoder_filters[0] // 2)
@@ -317,10 +329,10 @@ class EncoderDecoder(AbstractModel):
                 self.last_upsample_filters if self.first_layer_stride_two else self.decoder_filters[0], num_classes)
         self._initialize_weights()
         self.dropout = Dropout2d(p=0.25)
-        encoder = encoder_params[encoder_name]['init_op']()
-        self.encoder_stages = nn.ModuleList([self.get_encoder(encoder, idx) for idx in range(len(self.filters))])
+        self.encoder = encoder_params[encoder_name]['init_op']()
+        self.encoder_stages = nn.ModuleList([self.get_encoder(self.encoder, idx) for idx in range(len(self.filters))])
         if encoder_params[encoder_name]['url'] is not None and self.pretrained:
-            self.initialize_encoder(encoder, encoder_params[encoder_name]['url'], num_channels != 3)
+            self.initialize_encoder(self.encoder, encoder_params[encoder_name]['url'], num_channels != 3)
 
     # noinspection PyCallingNonCallable
     def forward(self, x):
@@ -350,8 +362,12 @@ class EncoderDecoder(AbstractModel):
 
         if self.use_bilinear_4x:
             f = upsample_bilinear(f, scale_factor=4)
-
-        return f
+            
+        if self.arcface:
+            classes = self.encoder.logits(enc_results[-1])
+            return f, classes
+        else:
+            return f
 
     def get_decoder(self, layer):
         in_channels = self.filters[layer + 1] if layer + 1 == len(self.decoder_filters) else self.decoder_filters[
@@ -408,7 +424,7 @@ class ConvBottleneck(nn.Module):
         return self.seq(x)
 
 class ConvSCSEBottleneckScaled(nn.Module):
-    def __init__(self, in_channels, out_channels, reduction=2, mode='concat', attention=False):
+    def __init__(self, in_channels, out_channels, reduction=2, mode='maxout', attention=False):
         print("bottleneck ", in_channels, out_channels)
         super().__init__()
 
@@ -521,13 +537,15 @@ class SCSeResnetD(EncoderDecoder):
 
 class SCSeResneXt(EncoderDecoder):
 
-    def __init__(self, seg_classes, backbone_arch, reduction=2, mode='concat', num_channels=3, pretrained=True, attention=False):
+    def __init__(self, seg_classes, backbone_arch, reduction=2, mode='maxout', num_channels=3, pretrained=True, attention=False, arcface=False):
         if not hasattr(self, 'bottleneck_type'):
             self.bottleneck_type = partial(ConvSCSEBottleneckNoBn, reduction=reduction, mode=mode, attention=attention)
         self.first_layer_stride_two = True
         self.concat_scse = mode == 'concat'
-        self.pretrained = pretraineds
+        self.pretrained = pretrained
         self.attention = attention
+        
+        self.arcface = arcface
 
         super().__init__(seg_classes,num_channels , backbone_arch)
         self.last_upsample = self.decoder_block(
@@ -553,9 +571,15 @@ class SCSeResneXt(EncoderDecoder):
 
         if self.first_layer_stride_two:
             x = self.last_upsample(x)
-
-        mask = self.final(x)
-        return mask
+            
+        if self.arcface:
+            mask = self.final(x)
+            classes = self.encoder.logits(enc_results[-1])
+            return mask, classes
+        else:
+            mask = self.final(x)
+            return mask
+            
 
     def get_decoder(self, layer):
         in_channels = self.filters[layer + 1] if layer + 1 == len(self.decoder_filters) else self.decoder_filters[
@@ -875,10 +899,10 @@ __all__ = ['scse_unet',
 if __name__ == '__main__':
     import numpy as np
 
-    d = SCSeNfNet(1, backbone_arch="dm_nfnet_f0", pretrained=False, attention=False, scaled=True)
+    d = SCSeResneXt(1, backbone_arch="seresnext50_arcface", pretrained=False, attention=False, arcface=True).cuda()
     d.eval()
     with torch.no_grad():
-        images = torch.from_numpy(np.zeros((1, 3, 256, 256), dtype="float32"))
-        i = d(images)
+        images = torch.from_numpy(np.zeros((1, 3, 256, 256), dtype="float32")).cuda()
+        i, c = d(images)
     print(d)
-    print(i.size())
+    print(i.size(), c.size())
